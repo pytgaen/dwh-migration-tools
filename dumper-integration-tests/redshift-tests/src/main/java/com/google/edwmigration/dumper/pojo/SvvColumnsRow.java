@@ -15,7 +15,6 @@
  */
 package com.google.edwmigration.dumper.pojo;
 
-import static com.google.edwmigration.dumper.jdbc.JdbcUtil.getIntNotNull;
 import static com.google.edwmigration.dumper.jdbc.JdbcUtil.getStringNotNull;
 import static java.lang.System.lineSeparator;
 
@@ -84,15 +83,15 @@ public abstract class SvvColumnsRow {
         getStringNotNull(rs, "table_schema"),
         getStringNotNull(rs, "table_name"),
         getStringNotNull(rs, "column_name"),
-        getIntNotNull(rs, "ordinal_position"),
+        rs.getInt("ordinal_position"),
         getStringNotNull(rs, "column_default"),
         getStringNotNull(rs, "is_nullable"),
         getStringNotNull(rs, "data_type"),
-        getIntNotNull(rs, "character_maximum_length"),
-        getIntNotNull(rs, "numeric_precision"),
-        getIntNotNull(rs, "numeric_precision_radix"),
-        getIntNotNull(rs, "numeric_scale"),
-        getIntNotNull(rs, "datetime_precision"),
+        rs.getInt("character_maximum_length"),
+        rs.getInt("numeric_precision"),
+        rs.getInt("numeric_precision_radix"),
+        rs.getInt("numeric_scale"),
+        rs.getInt("datetime_precision"),
         getStringNotNull(rs, "interval_type"),
         getStringNotNull(rs, "interval_precision"),
         getStringNotNull(rs, "character_set_catalog"),

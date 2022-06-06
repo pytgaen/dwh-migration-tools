@@ -15,15 +15,8 @@
  */
 package com.google.edwmigration.dumper.jdbc;
 
-import static com.google.edwmigration.dumper.base.TestConstants.TRAILING_SPACES_REGEX;
-
-import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
-import java.time.ZonedDateTime;
-import java.util.Calendar;
-import java.util.TimeZone;
 
 /**
  * A helper class for checking Null values returned by executing SELECT request against a database.
@@ -39,64 +32,6 @@ public final class JdbcUtil {
    */
   public static String getStringNotNull(ResultSet rs, String column) throws SQLException {
     String string = rs.getString(column);
-    return rs.wasNull() ? "" : TRAILING_SPACES_REGEX.matcher(string).replaceFirst("");
-  }
-
-  /**
-   * @param rs A row with SELECT results.
-   * @param column Database column name.
-   * @return int or 0 if null.
-   */
-  public static int getIntNotNull(ResultSet rs, String column) throws SQLException {
-    return rs.getInt(column);
-  }
-
-  /**
-   * @param rs A row with SELECT results.
-   * @param column Database column name.
-   * @return long or 0L if null.
-   */
-  public static long getLongNotNull(ResultSet rs, String column) throws SQLException {
-    return rs.getLong(column);
-  }
-
-  /**
-   * @param rs A row with SELECT results.
-   * @param column Database column name.
-   * @return byte[] or empty byte[] if null.
-   */
-  public static byte[] getBytesNotNull(ResultSet rs, String column) throws SQLException {
-    try {
-      byte[] bytesValue = rs.getBytes(column);
-      return rs.wasNull() ? new byte[0] : bytesValue;
-    } catch (SQLException e) {
-      BigDecimal bigDecimal = rs.getBigDecimal(column);
-      return rs.wasNull() ? new byte[0] : bigDecimal.toBigInteger().toByteArray();
-    }
-  }
-
-  /**
-   * @param rs A row with SELECT results.
-   * @param column Database column name.
-   * @return double or 0.0 if null.
-   */
-  public static double getDoubleNotNull(ResultSet rs, String column) throws SQLException {
-    return rs.getDouble(column);
-  }
-
-  /**
-   * @param rs A row with SELECT results.
-   * @param column Database column name.
-   * @return long or 0L if null.
-   */
-  public static long getTimestampNotNull(ResultSet rs, String column) throws SQLException {
-    Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
-    Timestamp timestamp = rs.getTimestamp(column, cal);
-    if (rs.wasNull()) {
-      return 0L;
-    }
-    return Timestamp.from(
-            ZonedDateTime.of(timestamp.toLocalDateTime(), cal.getTimeZone().toZoneId()).toInstant())
-        .getTime();
+    return rs.wasNull() ? "" : string;
   }
 }
