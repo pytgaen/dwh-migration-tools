@@ -48,19 +48,18 @@ public class SvvColumnsTest {
     LinkedHashMultiset<SvvColumnsRow> dbMultiset = LinkedHashMultiset.create();
     LinkedHashMultiset<SvvColumnsRow> csvMultiset = LinkedHashMultiset.create();
 
-    try (Connection connection = DriverManager.getConnection(URL_DB, USERNAME_DB, PASSWORD_DB)) {
-      try (PreparedStatement preparedStatement = connection.prepareStatement(getSql(SQL_PATH))) {
-        ResultSet rs = preparedStatement.executeQuery();
+    try (Connection connection = DriverManager.getConnection(URL_DB, USERNAME_DB, PASSWORD_DB);
+        PreparedStatement preparedStatement = connection.prepareStatement(getSql(SQL_PATH))) {
+      ResultSet rs = preparedStatement.executeQuery();
 
-        while (rs.next()) {
-          dbMultiset.add(SvvColumnsRow.create(rs));
-        }
+      while (rs.next()) {
+        dbMultiset.add(SvvColumnsRow.create(rs));
       }
     }
 
-    FileReader fileReader = new FileReader(CSV_FILE_PATH);
-    try (CSVReader reader =
-        new CSVReaderBuilder(fileReader).withSkipLines(1).withCSVParser(CSV_PARSER).build()) {
+    try (FileReader fileReader = new FileReader(CSV_FILE_PATH);
+        CSVReader reader =
+            new CSVReaderBuilder(fileReader).withSkipLines(1).withCSVParser(CSV_PARSER).build()) {
       String[] line;
       while ((line = reader.readNext()) != null) {
         SvvColumnsRow csvRow = SvvColumnsRow.create(line);

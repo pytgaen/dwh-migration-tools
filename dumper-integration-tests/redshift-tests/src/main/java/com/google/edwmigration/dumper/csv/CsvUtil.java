@@ -15,7 +15,6 @@
  */
 package com.google.edwmigration.dumper.csv;
 
-import static com.google.edwmigration.dumper.base.TestConstants.TRAILING_SPACES_REGEX;
 import static java.lang.Integer.parseInt;
 
 /** A helper class for reading and extracting data from CSV files. */
@@ -27,7 +26,7 @@ public final class CsvUtil {
    * @return String or an empty string if null.
    */
   public static String getStringNotNull(String value) {
-    return value == null ? "" : TRAILING_SPACES_REGEX.matcher(value).replaceFirst("");
+    return value == null ? "" : value;
   }
 
   /**
