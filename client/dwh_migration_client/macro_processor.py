@@ -20,10 +20,12 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from argparse import Namespace
 from os.path import abspath, dirname, isfile, join
 from pprint import pformat
 from typing import Dict, Pattern, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 from marshmallow import Schema, ValidationError, fields
@@ -38,6 +40,7 @@ class MacroProcessor:
     def __init__(self, macro_argument: Namespace) -> None:
         self.macro_argument = macro_argument
         self.expander = MapBasedExpander(macro_argument.macros)
+        self.files_expansioning = {}
 
     def preprocess(self, input_dir: str, tmp_dir: str) -> None:
         """The pre-upload entry point of a MacroProcessor.
@@ -147,7 +150,9 @@ class MacroProcessor:
             relative_input_path: relative path of the input file in the input_dir, e.g.,
                 subdir/subdir_2/sample.sql.
         """
-        return self.expander.expand(text, relative_input_path)
+        text, file_expansioning = self.expander.expand(text, relative_input_path)
+        self.files_expansioning[relative_input_path] = file_expansioning
+        return text
 
     def postprocess_file(
         self, tmp_path: str, output_path: str, output_dir: str
@@ -187,7 +192,72 @@ class MacroProcessor:
             relative_output_path: relative path of the output file in the output_dir,
                 e.g., subdir/subdir_2/sample.sql.
         """
-        return self.expander.unexpand(text, relative_output_path)
+        return self.expander.unexpand(
+            text, relative_output_path, self.files_expansioning[relative_output_path]
+        )
+
+
+class FileExpansioning:
+    # Make many assumption
+    # Inputs mainly is a la bash with ${..} or $..
+    # Output look like python f-str
+
+    def __init__(self, file_path: str, expansions: List[Tuple[str, Any]]):
+        self.file_path = file_path
+        self.expansions = expansions
+
+    def translate_macro(self, var_name: str) -> str:
+        res = var_name
+        if res.startswith("${"):
+            res = res[2:-1]
+        elif res.startswith("$"):
+            res = res[1:]
+
+        return "{" + res + "}"
+
+    def macro_name(self, var_name: str) -> str:
+        res = var_name
+        if res.startswith("${"):
+            res = res[2:-1]
+        elif res.startswith("$"):
+            res = res[1:]
+
+        return res
+
+    def used_macros(self) -> List[str]:
+        return [self.macro_name(expansion[0]) for expansion in self.expansions]
+
+    def unexpand(self, text: str) -> str:
+        for expansion in self.expansions:
+            text = text.replace(
+                str(expansion[1].expansion), self.translate_macro(expansion[0])
+            )
+
+        return text
+
+    def __repr__(self):
+        return f"<FileExpansioning> ({self.file_path}, {self.expansions})"
+
+
+class MacroDef:
+    def __init__(
+        self,
+        name: str,
+        expansion_def: str,
+        expansion: Optional[str] = None,
+        decollide: bool = False,
+        macro_type: Optional[str] = None,
+        quote: Optional[str] = None,
+    ):
+        self.name = name
+        self.expansion = expansion if expansion else expansion_def
+        self.decollide = decollide
+        self.macro_type = macro_type
+        self.quote = quote
+        self.expansion_def = expansion_def
+
+    def __repr__(self):
+        return f"<MacroDef> (name={self.name}, expansion_def={self.expansion_def}, decollide={self.decollide}, macro_type={self.macro_type}, expansion={self.expansion}, quote={self.quote})"
 
 
 class MacrosSchema(Schema):
@@ -204,7 +274,49 @@ class MapBasedExpander:
     def __init__(self, yaml_file_path: str) -> None:
         self.yaml_file_path = yaml_file_path
         self.macro_expansion_maps = self._parse_macros_config_file()
-        self.reversed_maps = self._get_reversed_maps()
+        # self.reversed_maps = self.__get_reversed_maps()
+
+    def check_macro_collision(self, expansion: List[Tuple[str, Any]], info_ref: str):
+        dict_exp = {
+            macro_name: macro_expand for (macro_name, macro_expand) in expansion
+        }
+        rever = {}
+        for macro_name, macro_expand in dict_exp.items():
+            v = rever.setdefault(macro_expand.expansion, [])
+            v.append(macro_name)
+
+        for k, expa in rever.items():
+            if len(expa) > 1:
+                for i, ex in enumerate(expa):
+                    expa_unquote = (
+                        (
+                            dict_exp[ex]
+                            .expansion.removeprefix(dict_exp[ex].quote)
+                            .removesuffix(dict_exp[ex].quote)
+                        )
+                        if dict_exp[ex].quote
+                        else dict_exp[ex].expansion
+                    )
+                    if dict_exp[ex].decollide and any(
+                        x.isalpha() or x.isspace() for x in str(expa_unquote)
+                    ):
+                        dict_exp[ex].expansion = (
+                            k[:-1]
+                            + "xy"
+                            + str(uuid.uuid4()).split("-")[0]
+                            + "yx"
+                            + k[-1]
+                        )
+                    if dict_exp[ex].decollide and all(
+                        x.isnumeric() for x in str(expa_unquote)
+                    ):
+                        dict_exp[ex].expansion = str(k)[:-1] + str(i) + str(k)[-1]
+                    print(
+                        f"Collision {info_ref} {ex}: {dict_exp[ex].expansion_def} -> {dict_exp[ex].expansion}"
+                    )
+                # if dict_exp
+
+        return dict_exp
 
     def expand(self, text: str, path: str) -> str:
         """Expands the macros in the text with the corresponding values defined in the
@@ -228,7 +340,7 @@ class MapBasedExpander:
             return text
         return patterns.sub(lambda m: reg_pattern_map[re.escape(m.group(0))], text)
 
-    def _get_reversed_maps(self) -> Dict[str, Dict[str, str]]:
+    def __get_reversed_maps(self) -> Dict[str, Dict[str, str]]:
         """Swaps key and value in the macro maps and return the new map."""
         reversed_maps = {}
         for file_key, macro_map in self.macro_expansion_maps.items():
@@ -259,18 +371,34 @@ class MapBasedExpander:
             self.yaml_file_path,
             pformat(validated_data),
         )
-        return validated_data["macros"]
+        macro = validated_data["macros"]
+
+        res = {}
+        for patt, patt_macro in macro.items():
+            res[patt] = {}
+            for macro_name, expa in patt_macro.items():
+                if isinstance(expa, dict):
+                    res[patt][macro_name] = MacroDef(
+                        macro_name,
+                        expa.get("value"),
+                        decollide=expa.get("decollide"),
+                        macro_type=expa.get("type"),
+                    )
+                else:
+                    res[patt][macro_name] = MacroDef(
+                        macro_name, expa, decollide=False, macro_type=None
+                    )
 
     def _get_all_regex_pattern_mapping(
-        self, file_path: str, use_reversed_map: bool = False
+        self, file_path: str # , use_reversed_map: bool = False
     ) -> Tuple[Dict[str, str], Pattern[str]]:
         """Compiles all the macros matched with the file path into a single regex
         pattern."""
-        macro_subst_maps = (
-            self.reversed_maps if use_reversed_map else self.macro_expansion_maps
-        )
+        # macro_subst_maps = (
+        #     self.reversed_maps if use_reversed_map else self.macro_expansion_maps
+        # )
         reg_pattern_map = {}
-        for file_map_key, token_map in macro_subst_maps.items():
+        for file_map_key, token_map in self.macro_expansion_maps.items():
             if fnmatch.fnmatch(file_path, file_map_key):
                 for key, value in token_map.items():
                     reg_pattern_map[re.escape(key)] = value

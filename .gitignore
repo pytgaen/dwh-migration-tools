@@ -13,3 +13,32 @@ venv
 .nox
 .python-version
 .vscode
+
+### VS CODE ###
+.vscode/
+
+# Environments
+.env
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+client/.env
+
+### temp ###
+tmp/*
+client/.tmp_processed/
+
+### translation ouput ###
+client/output/
+
+### personal config ###
+client/config.yaml
+client/macros.yaml
+
+### java class ###
+*.class
