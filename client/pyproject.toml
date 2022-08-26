@@ -1,16 +1,17 @@
 [tool.poetry]
-name = "Data Warehouse Migration Tools - Pyhon client"
+name = "dwh_migration_client"
 version = "0.1.0"
-description = ""
+description = "Data Warehouse Migration Tools - Pyhon client"
 authors = ["Gaëtan Montury <gaetan.montury@orange.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.9"
 google-cloud = "^0.34.0"
-google-cloud-storage = "^2.4.0"
-google-cloud-bigquery-migration = "^0.4.3"
-google-api-python-client = "^2.51.0"
+google-cloud-storage = "^2.3.0"
+google-cloud-bigquery-migration = "^0.7.0"
+google-api-python-client = "^2.45.0"
 PyYAML = "^6.0"
+marshmallow = "<=3.14.1"
 
 [tool.poetry.dev-dependencies]
 black = {extras = ["d"], version = "^22.3.0"}

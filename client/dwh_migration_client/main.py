@@ -113,7 +113,13 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         "names for those objects in BigQuery. More info please see "
         "https://cloud.google.com/bigquery/docs/output-name-mapping.",
     )
-
+    parser.add_argument(
+        "--use_env_credentials",
+        default=False,
+        action="store_true",
+        help="Use credentials provided by GOOGLE_APPLICATION_CREDENTIALS.",
+    )
+    
     parsed_args = parser.parse_args(args)
 
     logging.basicConfig(
