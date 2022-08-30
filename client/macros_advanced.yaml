@@ -31,9 +31,13 @@ macros:
     "${MACRO_1}": "my_table"
     "$MACRO_3": "our_table"
     "%MACRO_2%": "macro_replacement_2"
-    "${MACRO_s4a}": "L23"
+    "${MACRO_s4a}":
+      value: "L23"
+      decollide: true
     "${MACRO_s4b}": "L23"
-    "${MACRO_i4a}": "0"
-    "${MACRO_i4b}": "10+1"
+    "${MACRO_i4a}":
+      value: 0
+      decollide: true
+    "${MACRO_i4b}": 0
   "2.sql":
     "templated_column": "replacing_column"
