@@ -2,7 +2,7 @@
 from setuptools import find_packages, setup
 
 with open("README.md") as readme:
-  long_description = readme.read()
+    long_description = readme.read()
 
 setup(
     name="dwh_migration_client",
@@ -42,8 +42,6 @@ setup(
         ]
     },
     entry_points={
-        "console_scripts": [
-            "dwh-migration-client=dwh_migration_client.main:main"
-        ]
+        "console_scripts": ["dwh-migration-client=dwh_migration_client.main:main"]
     },
 )

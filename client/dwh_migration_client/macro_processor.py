@@ -29,6 +29,9 @@ import yaml
 from marshmallow import Schema, ValidationError, fields
 from yaml.loader import SafeLoader
 
+from dwh_migration_client.macro_processor_ofr import OfrMapBasedExpander
+from dwh_migration_client.macro_schema import MacrosSchema
+
 
 class MacroProcessor:
     """A processor to handle macros in the query files during the pre-processing and
@@ -75,6 +78,8 @@ class MacroProcessor:
             return True
         if name.startswith("."):
             return True
+        if name.endswith(".7z"):
+            return True            
         return False
 
     def is_processable(self, path: str, name: str) -> bool:
@@ -136,11 +141,11 @@ class MacroProcessor:
         logging.info("Preprocessing %s", input_path)
         with open(input_path, encoding="utf-8") as input_fh:
             text = input_fh.read()
-        text = self.preprocess_text(text, input_path[len(input_dir) + 1 :])
+        text = self.preprocess_text(text, input_dir, input_path[len(input_dir) + 1 :])        
         with open(tmp_path, "w", encoding="utf-8") as tmp_fh:
             tmp_fh.write(text)
 
-    def preprocess_text(self, text: str, relative_input_path: str) -> str:
+    def preprocess_text(self, text: str, input_dir: str, relative_input_path: str) -> str:
         """Preprocesses the given text, after conversion to the target dialect.
 
         Args:
@@ -148,8 +153,12 @@ class MacroProcessor:
             relative_input_path: relative path of the input file in the input_dir, e.g.,
                 subdir/subdir_2/sample.sql.
         """
-        self.files_macro_expander[relative_input_path] = MapBasedExpander(self.macro_argument.macros)
-        return self.files_macro_expander[relative_input_path].expand(text, relative_input_path)
+        self.files_macro_expander[relative_input_path] = OfrMapBasedExpander(
+            self.macro_argument.macros
+        )
+        return self.files_macro_expander[relative_input_path].expand(
+            text, input_dir, relative_input_path
+        )
 
     def postprocess_file(
         self, tmp_path: str, output_path: str, output_dir: str
@@ -171,11 +180,11 @@ class MacroProcessor:
         logging.info("Postprocessing into %s", output_path)
         with open(tmp_path, encoding="utf-8") as tmp_fh:
             text = tmp_fh.read()
-        text = self.postprocess_text(text, output_path[len(output_dir) + 1 :])
+        text = self.postprocess_text(text, output_path, output_path[len(output_dir) + 1 :])
         with open(output_path, "w", encoding="utf-8") as output_fh:
             output_fh.write(text)
 
-    def postprocess_text(self, text: str, relative_output_path: str) -> str:
+    def postprocess_text(self, text: str, output_dir: str, relative_output_path: str) -> str:
         """Postprocesses the given text, after conversion to the target dialect.
 
         The user may replace this method with any locally-specified implementation.
@@ -189,17 +198,10 @@ class MacroProcessor:
             relative_output_path: relative path of the output file in the output_dir,
                 e.g., subdir/subdir_2/sample.sql.
         """
+
         return self.files_macro_expander[relative_output_path].unexpand(
-            text, relative_output_path
-        )
-
-
-class MacrosSchema(Schema):
-    macros = fields.Dict(
-        keys=fields.String(),
-        values=fields.Dict(keys=fields.String(), values=fields.String(), required=True),
-        required=True,
-    )
+            text, output_dir, relative_output_path
+        )        
 
 
 class MapBasedExpander:

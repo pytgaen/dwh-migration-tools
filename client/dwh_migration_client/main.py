@@ -120,7 +120,7 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         action="store_true",
         help="Use credentials provided by GOOGLE_APPLICATION_CREDENTIALS.",
     )
-    
+
     parsed_args = parser.parse_args(args)
 
     logging.basicConfig(

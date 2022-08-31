@@ -16,6 +16,7 @@
 
 import logging
 import os
+from pathlib import Path
 import shutil
 import sys
 import time
@@ -55,6 +56,9 @@ class BatchSqlTranslator:  # pylint: disable=too-many-instance-attributes
         self.preprocessor = preprocessor  # May be None
         self._object_name_mapping_list = object_name_mapping_list
         self.tmp_dir = join(dirname(self._input_directory), self._TMP_DIR_NAME)
+
+        shutil.rmtree(self.tmp_dir)
+        Path(self.tmp_dir).mkdir()
 
     _JOB_FINISHED_STATES = {
         bigquery_migration_v2.types.MigrationWorkflow.State.COMPLETED,

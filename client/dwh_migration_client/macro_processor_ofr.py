@@ -15,11 +15,20 @@
 post-processing stages of a Batch Sql Translation job.
 """
 
+from ast import ExceptHandler
+from curses.ascii import isalnum
+from datetime import datetime, timedelta
+import decimal
 import fnmatch
+from functools import lru_cache
 import logging
 import os
+from pathlib import Path
+import pstats
+import random
 import re
 import shutil
+import string
 import uuid
 from argparse import Namespace
 from os.path import abspath, dirname, isfile, join
@@ -31,15 +40,49 @@ import yaml
 from marshmallow import Schema, ValidationError, fields
 from yaml.loader import SafeLoader
 
+from dwh_migration_client.macro_schema import MacrosSchema
+from dateutil.parser import parse
+
+
+@lru_cache
+def global_parse_macros_config_file(yaml_file_path) -> Dict[str, Dict[str, str]]:
+    """Parses the macros mapping yaml file.
+
+    Return:
+        macros_replacement_maps: mapping from macros to the replacement string for
+            each file.  {file_name: {macro: replacement}}. File name supports
+            wildcard, e.g., with "*.sql", the method will apply the macro map to all
+            the files with extension of ".sql".
+    """
+    # logging.info("Parsing macros file: %s.", yaml_file_path)
+    with open(yaml_file_path, encoding="utf-8") as file:
+        data = yaml.load(file, Loader=SafeLoader)
+    try:
+        validated_data: Dict[str, Dict[str, Dict[str, str]]] = MacrosSchema().load(data)
+    except ValidationError as error:
+        logging.error("Invalid macros file: %s: %s.", yaml_file_path, error)
+        raise
+    # logging.info(
+    #     "Finished parsing macros file: %s:\n%s.",
+    #     yaml_file_path,
+    #     pformat(validated_data),
+    # )
+    return validated_data["macros"]
+
 
 class FileExpansioning:
     # Make many assumption
     # Inputs mainly is a la bash with ${..} or $..
     # Output look like python f-str
 
-    def __init__(self, file_path: str, expansions: List[Tuple[str, Any]]):
+    def __init__(self, file_path: str, macros: Dict[str, Any]):
         self.file_path = file_path
-        self.expansions = expansions
+        self.macros = macros
+        self.expansions = {}
+
+        self.unix_var = re.compile(
+            r"(?<!\\)(\$(?P<vars>[a-zA-Z_][a-zA-Z_0-9]*))|(\${(?P<varm>[a-zA-Z_][a-zA-Z_0-9]*)})"
+        )
 
     def macro_name(self, var_name: str) -> str:
         res = var_name
@@ -53,16 +96,26 @@ class FileExpansioning:
     def translate_macro_ouput(self, var_name: str) -> str:
         return "{" + self.macro_name(var_name) + "}"
 
+    def _used_macros(self, text: str) -> Set[str]:
+        env_var = set()
+        for m in self.unix_var.finditer(text):
+            if m.groupdict()["vars"] is None:
+                env_var.add(m.groupdict()["varm"])
+            else:
+                env_var.add(m.groupdict()["vars"])
+
+        if "HEADER" in env_var:
+            env_var.remove("HEADER")
+
+        if "Workfile" in env_var:
+            env_var.remove("Workfile")
+
+        return env_var
+
     def used_macros(self) -> List[str]:
+        text = Path(self.file_path).read_text()
 
-# unix_var = re.compile(
-#     r"(?<!\\)(\$(?P<vars>[a-zA-Z_][a-zA-Z_0-9]*))|(\${(?P<varm>[a-zA-Z_][a-zA-Z_0-9]*)})"
-# )
-# unix_var_s = re.compile(r"(?<!\\)(\$([a-zA-Z_][a-zA-Z_0-9]*))")
-# unix_var_m = re.compile(r"(?<!\\)(\${([a-zA-Z_][a-zA-Z_0-9]*)})")
-# unix_escape_dollar = re.compile(r"(\\\$)")
-
-        return [self.macro_name(expansion[0]) for expansion in self.expansions]
+        return list(self._used_macros(text))
 
     def unexpand(self, text: str) -> str:
         for expansion in self.expansions:
@@ -76,168 +129,269 @@ class FileExpansioning:
         return f"<FileExpansioning> ({self.file_path}, {self.expansions})"
 
 
-class MacroDef:
-    def __init__(
-        self,
-        name: str,
-        expansion_def: str,
-        expansion: Optional[str] = None,
-        decollide: bool = False,
-        macro_type: Optional[str] = None,
-        quote: Optional[str] = None,
-    ):
-        self.name = name
-        self.expansion = expansion if expansion else expansion_def
-        self.decollide = decollide
-        self.macro_type = macro_type
-        self.quote = quote
-        self.expansion_def = expansion_def
-
-    def __repr__(self):
-        return f"<MacroDef> (name={self.name}, expansion_def={self.expansion_def}, decollide={self.decollide}, macro_type={self.macro_type}, expansion={self.expansion}, quote={self.quote})"
-
-
-class MacrosSchema(Schema):
-    macros = fields.Dict(
-        keys=fields.String(),
-        values=fields.Dict(keys=fields.String(), values=fields.String(), required=True),
-        required=True,
-    )
-
-
-class DecollideMapBasedExpander:
+class OfrMapBasedExpander:
     """An util class to handle map based yaml file."""
 
     def __init__(self, yaml_file_path: str) -> None:
         self.yaml_file_path = yaml_file_path
-        self.macro_expansion_maps = self._parse_macros_config_file()
-        # self.reversed_maps = self.__get_reversed_maps()
+        self.macro_expansion_maps = global_parse_macros_config_file(yaml_file_path)
+        self.generic_macro_expansion_maps = self.macro_expansion_maps["*.sql"]
+        # self.reversed_maps = self._get_reversed_maps()
 
-    def check_macro_collision(self, expansion: List[Tuple[str, Any]], info_ref: str):
-        dict_exp = {
-            macro_name: macro_expand for (macro_name, macro_expand) in expansion
-        }
-        rever = {}
-        for macro_name, macro_expand in dict_exp.items():
-            v = rever.setdefault(macro_expand.expansion, [])
-            v.append(macro_name)
+        self.macros_def: Dict[str, MacroDef] = {}
 
-        for k, expa in rever.items():
-            if len(expa) > 1:
-                for i, ex in enumerate(expa):
-                    expa_unquote = (
-                        (
-                            dict_exp[ex]
-                            .expansion.removeprefix(dict_exp[ex].quote)
-                            .removesuffix(dict_exp[ex].quote)
-                        )
-                        if dict_exp[ex].quote
-                        else dict_exp[ex].expansion
-                    )
-                    if dict_exp[ex].decollide and any(
-                        x.isalpha() or x.isspace() for x in str(expa_unquote)
-                    ):
-                        dict_exp[ex].expansion = (
-                            k[:-1]
-                            + "xy"
-                            + str(uuid.uuid4()).split("-")[0]
-                            + "yx"
-                            + k[-1]
-                        )
-                    if dict_exp[ex].decollide and all(
-                        x.isnumeric() for x in str(expa_unquote)
-                    ):
-                        dict_exp[ex].expansion = str(k)[:-1] + str(i) + str(k)[-1]
-                    print(
-                        f"Collision {info_ref} {ex}: {dict_exp[ex].expansion_def} -> {dict_exp[ex].expansion}"
-                    )
-                # if dict_exp
-
-        return dict_exp
-
-    def expand(self, text: str, path: str) -> str:
+    def expand(self, text: str, path_dir: str, path_name: str) -> str:
         """Expands the macros in the text with the corresponding values defined in the
         macros_substitution_map file.
 
         Returns the text after macro substitution.
         """
-        reg_pattern_map, patterns = self._get_all_regex_pattern_mapping(path)
-        if len(reg_pattern_map) == 0:
-            return text
-        return patterns.sub(lambda m: reg_pattern_map[re.escape(m.group(0))], text)
+        self.macro_problem = []
+        self.file_path = path_dir + "/" + path_name
 
-    def unexpand(self, text: str, path: str) -> str:
+        _text_orig = Path(self.file_path).read_text()
+        _text = _text_orig
+
+        _file_expa = FileExpansioning(self.file_path, self.macro_expansion_maps)
+
+        for _macro_file_expa in _file_expa.used_macros():
+            if "${" + _macro_file_expa + "}" not in self.generic_macro_expansion_maps:
+                rnd_str = "".join(
+                    random.choice(
+                        string.ascii_lowercase
+                        + string.digits  # string.ascii_uppercase +
+                    )
+                    for _ in range(16)
+                )
+                logging.warning(
+                    "!!! OFR macro ${"
+                    + _macro_file_expa
+                    + "} not exist in macro.yaml, defaulting to random string "
+                    + rnd_str
+                )
+                self.macro_problem.append(
+                    f"""macro not defined: {_macro_file_expa} use random string {rnd_str}"""
+                )
+                self.generic_macro_expansion_maps[
+                    "${" + _macro_file_expa + "}"
+                ] = rnd_str
+
+            macrod = MacroDef(
+                _macro_file_expa,
+                self.generic_macro_expansion_maps["${" + _macro_file_expa + "}"],
+            )
+            nb_try = 100
+            while re.search(re.escape(macrod.expansion), _text, re.IGNORECASE):
+                nb_try -= 1
+                if macrod.macro_type == "database" or nb_try == 0:
+                    break
+                macrod.try_uncollide()
+
+            if re.search(re.escape(macrod.expansion), _text, re.IGNORECASE):
+                if macrod.macro_type == "database":
+                    obscured = []
+                    for dn in _file_expa.used_macros():
+                        if dn == _macro_file_expa:
+                            continue # skip myself
+                        if "${" + dn + "}" in self.generic_macro_expansion_maps:
+                            d = MacroDef(
+                                dn,
+                                self.generic_macro_expansion_maps["${" + dn + "}"],
+                            )
+                            if (
+                                d.macro_type == "database"
+                                and macrod.expansion == d.expansion
+                            ):
+                                obscured.append(dn)
+                    self.macro_problem.append(
+                        f"""macro database collide: {_macro_file_expa} value {macrod.expansion} collide with {obscured}"""
+                    )
+                else:
+                    self.macro_problem.append(
+                        f"""macro collide: {_macro_file_expa} value {macrod.expansion}"""
+                    )
+
+            self.macros_def[macrod.name] = macrod
+
+            _text = _text.replace("${" + _macro_file_expa + "}", macrod.expansion)
+            _text = _text.replace("$" + _macro_file_expa, macrod.expansion)
+
+        return _text
+
+    def unexpand(self, text: str, path_dir: str, path_name: str) -> str:
         """Reverts the macros substitution by replacing the values with macros defined
         in the macros_substitution_map file.
 
         Returns the text after replacing the values with macros.
         """
-        reg_pattern_map, patterns = self._get_all_regex_pattern_mapping(path, True)
-        if len(reg_pattern_map) == 0:
-            return text
-        return patterns.sub(lambda m: reg_pattern_map[re.escape(m.group(0))], text)
-
-    def _get_reversed_maps(self) -> Dict[str, Dict[str, str]]:
-        """Swaps key and value in the macro maps and return the new map."""
-        reversed_maps = {}
-        for file_key, macro_map in self.macro_expansion_maps.items():
-            reversed_maps[file_key] = dict((v, k) for k, v in macro_map.items())
-        return reversed_maps
-
-    def _parse_macros_config_file(self) -> Dict[str, Dict[str, str]]:
-        """Parses the macros mapping yaml file.
-
-        Return:
-            macros_replacement_maps: mapping from macros to the replacement string for
-                each file.  {file_name: {macro: replacement}}. File name supports
-                wildcard, e.g., with "*.sql", the method will apply the macro map to all
-                the files with extension of ".sql".
-        """
-        logging.info("Parsing macros file: %s.", self.yaml_file_path)
-        with open(self.yaml_file_path, encoding="utf-8") as file:
-            data = yaml.load(file, Loader=SafeLoader)
-        try:
-            validated_data: Dict[str, Dict[str, Dict[str, str]]] = MacrosSchema().load(
-                data
-            )
-        except ValidationError as error:
-            logging.error("Invalid macros file: %s: %s.", self.yaml_file_path, error)
-            raise
-        logging.info(
-            "Finished parsing macros file: %s:\n%s.",
-            self.yaml_file_path,
-            pformat(validated_data),
+        _text = text
+        macros_to_order = list(self.macros_def.values())
+        macros_ordered = sorted(
+            macros_to_order, key=lambda m: len(m.expansion), reverse=True
         )
-        macro = validated_data["macros"]
 
-        res = {}
-        for patt, patt_macro in macro.items():
-            res[patt] = {}
-            for macro_name, expa in patt_macro.items():
-                if isinstance(expa, dict):
-                    res[patt][macro_name] = MacroDef(
-                        macro_name,
-                        expa.get("value"),
-                        decollide=expa.get("decollide"),
-                        macro_type=expa.get("type"),
-                    )
-                else:
-                    res[patt][macro_name] = MacroDef(
-                        macro_name, expa, decollide=False, macro_type=None
-                    )
+        for macrod in macros_ordered:
+            # if macrod.macro_type == "database":
+            #     _text = _text.replace(macrod.expansion, "{" + macrod.name + "}")
+            #     _text = _text.replace(macrod.expansion.lower(), "{" + macrod.name + "}")
+            #     _text = _text.replace(macrod.expansion.upper(), "{" + macrod.name + "}")
+            # else:
+            #     _text = _text.replace(macrod.expansion, "{" + macrod.name + "}")
 
-    def _get_all_regex_pattern_mapping(
-        self, file_path: str  # , use_reversed_map: bool = False
-    ) -> Tuple[Dict[str, str], Pattern[str]]:
-        """Compiles all the macros matched with the file path into a single regex
-        pattern."""
-        # macro_subst_maps = (
-        #     self.reversed_maps if use_reversed_map else self.macro_expansion_maps
-        # )
-        reg_pattern_map = {}
-        for file_map_key, token_map in self.macro_expansion_maps.items():
-            if fnmatch.fnmatch(file_path, file_map_key):
-                for key, value in token_map.items():
-                    reg_pattern_map[re.escape(key)] = value
-        all_patterns = re.compile("|".join(reg_pattern_map.keys()))
-        return reg_pattern_map, all_patterns
+            _text = _text.replace(macrod.expansion, "{" + macrod.name + "}")
+            _text = _text.replace(macrod.expansion.lower(), "{" + macrod.name + "}")
+            _text = _text.replace(macrod.expansion.upper(), "{" + macrod.name + "}")
+
+        _text = _text.replace("__DEFAULT_DATABASE__.", "")
+
+        u_vars = ", ".join(f'"{m}"' for m in self.macros_def.keys())
+        header = f"""-- generated by macro processor_ofr at {datetime.now().isoformat()}
+-- USED_VARS = [{u_vars}]
+
+"""
+
+        if self.macro_problem:
+            pbs = [
+                f"""-- macro processor_ofr warning: {m}""" for m in self.macro_problem
+            ]
+            header = header + "\n".join(pbs) + "\n\n"
+
+        return header + _text
+
+
+class MacroDef:
+    def __init__(
+        self,
+        name: str,
+        expansion_def: Optional[str] = None,
+        macro_type: Optional[str] = None,
+    ):
+        self.name = name
+        self.expansion_def = expansion_def.strip()
+        self.macro_type = macro_type
+        self.quote = self.expansion_def.startswith("'") and self.expansion_def.endswith(
+            "'"
+        )
+        self.expansion = expansion_def.strip()
+
+        self.guess_macro_type()
+
+    def infer_date_format(self, datetime_str):
+        _type = ""
+        try:
+            _ = parse(datetime_str)
+            _type = "string"  # datetime:unknow"
+            is_datetime = True
+        except Exception as e:
+            raise ValueError("Not a datetime") from e
+
+        valid_date_formats = [
+            "%Y-%m-%d",
+            "%Y-%m-%d",
+            "%y-%m-%d",
+            "%d/%m/%Y",
+            "%Y/%m/%d",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+        ]
+        for date_format in valid_date_formats:
+            try:
+                _ = datetime.strptime(datetime_str, date_format)
+                _type = "datetime:" + date_format
+            except ValueError:
+                pass
+
+        if not _type.startswith("datetime:"):
+            raise ValueError("Not a datetime")
+
+        return _type
+
+    def guess_macro_type(self):
+        if self.macro_type:
+            return None
+
+        _type = "string"
+
+        try:
+            _ = int(self.expansion_def)
+            _type = "integer"
+        except Exception as e:
+            pass
+
+        if _type == "string":
+            try:
+                _ = decimal.Decimal(self.expansion_def)
+                _type = "decimal"
+            except Exception as e:
+                pass
+
+        if _type == "string":
+            try:
+                _datetime_fmt = self.infer_date_format(self.expansion_def)
+                _type = _datetime_fmt
+            except Exception as e:
+                pass
+
+        if _type == "string":
+            if self.expansion_def.endswith("_MM2_CY2"):
+                _type = "database"
+
+        self.macro_type = _type
+
+    def try_uncollide_datetime(self, datetime_str, datetime_fmt):
+        dt = datetime.strptime(datetime_str, datetime_fmt)
+        if dt.year == 9999:
+            dt = dt - timedelta(days=random.randint(0, 120))
+        else:
+            dt = dt + timedelta(days=random.randint(0, 120))
+
+        return datetime.strftime(dt, datetime_fmt)
+
+    def try_uncollide_int_or_decimal(self, value):
+        if value < 32000:
+            value = value - random.randint(0, 120)
+        else:
+            value = value + random.randint(0, 120)
+
+        return str(value)
+
+    def try_uncollide_string(self, value, join="xxx"):
+        for ci, cv in enumerate(value):
+            if cv.isalnum():
+                rnd_part = "".join(
+                    random.choice(
+                        string.ascii_lowercase
+                        + string.digits  # string.ascii_uppercase +
+                    )
+                    for _ in range(16)
+                )
+                return value[:ci] + join + rnd_part + join + value[ci:]
+
+        rnd_part = "".join(
+            random.choice(
+                string.ascii_lowercase + string.digits  # string.ascii_uppercase +
+            )
+            for _ in range(16)
+        )
+        return join + rnd_part + join + value
+
+    def try_uncollide(self):
+        _un = self.expansion_def
+        if self.macro_type in ["integer"]:
+            _un = self.try_uncollide_int_or_decimal(int(self.expansion_def))
+
+        if self.macro_type in ["decimal"]:
+            _un = self.try_uncollide_int_or_decimal(decimal.Decimal(self.expansion_def))
+
+        if self.macro_type.startswith("datetime:"):
+            fmt = self.macro_type.split(":", 1)[1]
+            _un = self.try_uncollide_datetime(self.expansion_def, fmt)
+
+        if self.macro_type in ["string"]:
+            _un = self.try_uncollide_string(self.expansion_def)
+
+        self.expansion = _un
+        return _un
+
+    def __repr__(self):
+        return f"<MacroDef> (name={self.name}, expansion_def={self.expansion_def}, macro_type={self.macro_type}, expansion={self.expansion}, quote={self.quote})"  # decollide={self.decollide},

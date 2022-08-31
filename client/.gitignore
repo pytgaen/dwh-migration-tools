@@ -34,13 +34,18 @@ tmp/*
 client/.tmp_processed/
 
 ### translation ouput ###
-client/output/
+output/
+old_output/
+
+### translation input ###
+input/kenobi
 
 ### personal config ###
-client/config.yaml
-client/macros.yaml
+config.yaml
+macros.yaml
 
 ### java class ###
 *.class
-client/input/Translation_Bteq2BQ-*.zip
-client/macros.yaml
+
+### customer macro ###
+macros_*.yaml

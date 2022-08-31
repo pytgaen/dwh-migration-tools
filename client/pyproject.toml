@@ -12,14 +12,16 @@ google-cloud-bigquery-migration = "^0.7.0"
 google-api-python-client = "^2.45.0"
 PyYAML = "^6.0"
 marshmallow = "<=3.14.1"
+python-dateutil = "^2.8.2"
 
 [tool.poetry.dev-dependencies]
-black = {extras = ["d"], version = "^22.3.0"}
+black = {extras = ["d"], version = "^22.6.0"}
 isort = "^5.10.1"
 unimport = "^0.9.6"
 mypy = "^0.961"
 flake8 = "^4.0.1"
 bandit = "^1.7.4"
+pytest = "^7.1.2"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
@@ -36,7 +38,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 # Black will refuse to run if it's not this version.
-required-version = "22.3.0"
+required-version = "22.6.0"
 
 # Ensure black's output will be compatible with all listed versions.
 target-version = ['py37', 'py38', 'py39', 'py310']
