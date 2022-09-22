@@ -16,6 +16,7 @@ post-processing stages of a Batch Sql Translation job.
 """
 
 import fnmatch
+import json
 import logging
 import os
 import re
@@ -29,7 +30,7 @@ import yaml
 from marshmallow import Schema, ValidationError, fields
 from yaml.loader import SafeLoader
 
-from dwh_migration_client.macro_processor_ofr import OfrMapBasedExpander
+from dwh_migration_client.macro_processor_ofr import CHAR_CPLX, CHAR_TOP, MACRO_STATS, OfrMapBasedExpander
 from dwh_migration_client.macro_schema import MacrosSchema
 
 
@@ -68,6 +69,20 @@ class MacroProcessor:
                 preprocessing.
         """
         self._process(abspath(tmp_dir), abspath(output_dir), revert_expansion=True)
+        _top = dict(sorted(
+            CHAR_TOP.items(), key=lambda m: m[1]['nb'], reverse=True
+        ))
+        with open("char_top.json", "w") as f_char_top:
+            json.dump(_top, f_char_top, indent=2)
+
+        print ('stats macro', MACRO_STATS)
+
+        print('CHAR_CPLX')
+        for c in CHAR_CPLX:
+            print(c, ord(c), end="  ")
+        print('')
+
+
 
     def is_ignored(self, path: str, name: str) -> bool:
         """Returns true if a file is ignored.
@@ -79,7 +94,7 @@ class MacroProcessor:
         if name.startswith("."):
             return True
         if name.endswith(".7z"):
-            return True            
+            return True
         return False
 
     def is_processable(self, path: str, name: str) -> bool:
@@ -91,7 +106,7 @@ class MacroProcessor:
         """
         if self.is_ignored(path, name):
             return False
-        if name.lower().endswith((".zip", ".json", ".csv")):
+        if name.lower().endswith((".zip", ".json", ".csv", ".sav")):
             return False
         return True
 
@@ -141,11 +156,13 @@ class MacroProcessor:
         logging.info("Preprocessing %s", input_path)
         with open(input_path, encoding="utf-8") as input_fh:
             text = input_fh.read()
-        text = self.preprocess_text(text, input_dir, input_path[len(input_dir) + 1 :])        
+        text = self.preprocess_text(text, input_dir, input_path[len(input_dir) + 1 :])
         with open(tmp_path, "w", encoding="utf-8") as tmp_fh:
             tmp_fh.write(text)
 
-    def preprocess_text(self, text: str, input_dir: str, relative_input_path: str) -> str:
+    def preprocess_text(
+        self, text: str, input_dir: str, relative_input_path: str
+    ) -> str:
         """Preprocesses the given text, after conversion to the target dialect.
 
         Args:
@@ -180,11 +197,15 @@ class MacroProcessor:
         logging.info("Postprocessing into %s", output_path)
         with open(tmp_path, encoding="utf-8") as tmp_fh:
             text = tmp_fh.read()
-        text = self.postprocess_text(text, output_path, output_path[len(output_dir) + 1 :])
+        text = self.postprocess_text(
+            text, output_path, output_path[len(output_dir) + 1 :]
+        )
         with open(output_path, "w", encoding="utf-8") as output_fh:
             output_fh.write(text)
 
-    def postprocess_text(self, text: str, output_dir: str, relative_output_path: str) -> str:
+    def postprocess_text(
+        self, text: str, output_dir: str, relative_output_path: str
+    ) -> str:
         """Postprocesses the given text, after conversion to the target dialect.
 
         The user may replace this method with any locally-specified implementation.
@@ -201,7 +222,7 @@ class MacroProcessor:
 
         return self.files_macro_expander[relative_output_path].unexpand(
             text, output_dir, relative_output_path
-        )        
+        )
 
 
 class MapBasedExpander:

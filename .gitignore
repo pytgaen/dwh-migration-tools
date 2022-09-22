@@ -42,5 +42,7 @@ client/macros.yaml
 
 ### java class ###
 *.class
+
+### personal config ###
 client/input/Translation_Bteq2BQ-*.zip
-client/macros.yaml
+client/Translation_Bteq2BQ-*.csv
